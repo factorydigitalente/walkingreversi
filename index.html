@@ -1107,7 +1107,8 @@ function placeStone(r, c) {
 
 
 function handleMove(dr, dc) {
-    if (isGameOver || !isMovingMode || ap <= 0) return; // 【修正】isGameOverを追加
+	if (isGameOver) return; // ★最優先で完全に処理を止める
+    if (!isMovingMode || ap <= 0) return;
 
 	// --- 追記: CPUのターンなら人間による移動をブロック ---
     const isCpuTurn = (isPvE && currentPlayer === 2) || isCPUvCPU;
@@ -1219,39 +1220,43 @@ function hasAdjacentStone(r, c) {
 
 // アバターの現在位置を計算して表示
 function applyHP(player, amount, r, c, txt) {
-    // 1. 先にHPの計算を行い、UIの描画更新（アバターの移動）をかける
+    // 1. HPの計算を行い、0〜MAX_HPの範囲に収める
     avatars[player].hp = Math.min(MAX_HP, Math.max(0, avatars[player].hp + amount));
+    
+    // 先にUIを更新
     updateUI();
 
-    // 2. アバターが持っている【本当の現在地】を基準にして位置を取得する
+    // ダメージテキストのポップアップ（演出）
     if (txt) {
         setTimeout(() => {
-            // 【修正】引数の r, c ではなく、アバターオブジェクトから本当の現在地(r, c)を動的に取得
             const currentR = avatars[player].r;
             const currentC = avatars[player].c;
-            
             const targetCell = document.getElementById(`cell-${currentR}-${currentC}`);
             let posX = window.innerWidth / 2;
             let posY = window.innerHeight / 2;
-            
             if (targetCell) {
                 const rect = targetCell.getBoundingClientRect();
                 posX = rect.left + window.scrollX + (rect.width / 2);
                 posY = rect.top + window.scrollY;
             }
-            
             const textColor = (amount < 0) ? '#ff4757' : '#2ecc71';
             showFloatingText(txt, posX, posY, textColor);
-        }, 150); // アバターがマスにしっかり移動し終えるのを待つために少しだけ猶予を調整（150ms）
+        }, 150);
     }
 
-    // HPが0になったら即判定し、死亡フラグ(true)を返す
+	// もしHPが0以下になったら、即座にゲームオーバー判定を行う
     if (avatars[player].hp <= 0) {
-        // ゲームオーバーの表示を少し遅らせる
+        // 先に現在の死亡状態のデータをUIと盤面に「予約反映」させる
+        updateUI();
+        drawBoard();
+
+        // 💥ブラウザに最後の1歩とHP0の描画を強制的に完了させるため、
+        // ゲームオーバーの文字表示やBGM切り替えだけを「次のフレーム（50ミリ秒後）」にずらす
         setTimeout(() => {
             checkGameOver();
-        }, 200);
-        return true; 
+        }, 50); 
+        
+        return true;
     }
     return false;
 }
@@ -1269,6 +1274,7 @@ function showFloatingText(txt, x, y, color) {
 }
 
 function endTurn() {
+	if (isGameOver) return; // ★ゲームオーバーなら、次のターンへの移行を完全に絶対阻止する！
     isMovingMode = false;
     visitedCells.clear();
 
@@ -1415,11 +1421,16 @@ function updateUI() {
 function checkGameOver(force = false) {
     let winner = null;
     
-    if (avatars[1].hp <= 0) {
+    // 【重要】HPが0以下になった場合の即死判定（forceに関係なく常に最優先でチェック）
+    if (avatars[1].hp <= 0 && avatars[2].hp <= 0) {
+        winner = "Draw (Both down!)";
+    } else if (avatars[1].hp <= 0) {
         winner = "P1 is down...P2 Win!";
     } else if (avatars[2].hp <= 0) {
         winner = "P2 is down...P1 Win!";
-    } else if (force) {
+    } 
+    // HPが残っているが、ゲーム終了条件（パスが続いた、盤面が埋まった等）を満たした場合
+    else if (force) {
         // 終局時のスコア判定
         const s1 = (board.flat().filter(v=>v===1).length * 10) + (avatars[1].hp * 8);
         const s2 = (board.flat().filter(v=>v===2).length * 10) + (avatars[2].hp * 8);
@@ -1427,19 +1438,19 @@ function checkGameOver(force = false) {
     }
 
     if (winner) {
- 	    isGameOver = true; // 勝敗判定
+        isGameOver = true; // 勝敗判定
         isCPUvCPU = false; // CPU観戦を停止
         const statusEl = document.getElementById('status-msg');
-		const dayText = `<span style="color: white;">DAY${dayCount}:</span> `;
+        const dayText = `<span style="color: white;">DAY${dayCount}:</span> `;
         statusEl.innerHTML = dayText + winner + " - GAME OVER -";
         statusEl.style.color = "#ff4757";
         
         isMovingMode = false;
         isCPUvCPU = false; // CPUモードも止める
         
-		// 勝敗BGM
+        // 勝敗BGM
         const player = document.getElementById('bgm-player');
-        player.loop = false; // 終了BGMはループさせない（お好みでtrueでも可）
+        if (player) player.loop = false; // 終了BGMはループさせない
         playBGM('./bgm/bgm_end.mp3');
         
         // 【追加】キーパッドをグレーアウトさせるために描画更新
@@ -1838,20 +1849,27 @@ let cpuWaitTime = 500; // デフォルト値
 let isCpuRunningNow = false;
 
 function runCPUTurn() {
-
-	// 【修正1】すでにタイマーが動いているなら、重複起動を防ぐために即座に終了する（安全ロック）
+    // 1. すでにタイマーが動いているか、ゲームオーバーなら即終了
     if (isCpuRunningNow) return;
+    if (isGameOver) { 
+        isCpuRunningNow = false; 
+        return; 
+    }
 
-    // CPU観戦モード、または（PvEモード かつ 現在がCPUの番）の時だけ実行
+    // 2. CPUの実行条件をチェック
     const isCpuCurrentPlayer = (isPvE && currentPlayer === 2);
-    if (!isCPUvCPU && !isCpuCurrentPlayer) return;
+    if (!isCPUvCPU && !isCpuCurrentPlayer) {
+        // CPUの番ではないなら、フラグを必ず false に戻して終了する
+        isCpuRunningNow = false; 
+        return;
+    }
 
-	isCpuRunningNow = true; // 【追記】CPUが動いていることを示す
-    // 処理を実行
+    // 3. ここからCPUの処理開始（ロックをかける）
+    isCpuRunningNow = true; 
     let nextStepPossible = false;
     
     if (!isMovingMode) {
-    	// 石を置くフェーズ
+        // 石を置くフェーズ
         const move = getCPUMove();
         if (move) {
             placeStone(move.r, move.c);
@@ -1861,29 +1879,33 @@ function runCPUTurn() {
             nextStepPossible = true;
         }
     } else {
-    	// 巡回フェーズ
+        // 巡回フェーズ
         if (ap > 0) {
             const route = getCPURoute();
             if (route) {
                 handleMove(route.dr, route.dc);
                 nextStepPossible = true;
             } else {
-            	// 周囲に石がない場合の詰み救済（保険）
+                // 周囲に石がない場合の詰み救済（保険）
                 handleMove(0, 0); 
                 nextStepPossible = true;
             }
         } else {
-			// APが0の時は、次のターン（プレイヤーの手番など）に安全に移るため、
-            // ここでは次のCPUタイマーを予約させない（false のままにする）
+            // APが0の時は、次のターンに安全に移るため、予約させない
             nextStepPossible = false;
         }
     }
-	if (nextStepPossible) {
-        // 【修正2】次の実行（500ms後）を予約するタイミングで、初めてロックを解除する
+
+    // 4. 次の実行への予約とロック解除
+    if (nextStepPossible) {
+        // ここで一旦ロック解除して次のタイマーを回す
         isCpuRunningNow = false; 
-        setTimeout(runCPUTurn, cpuWaitTime); 
+        
+        // 【超重要】もし上の処理(placeStoneやhandleMove)の内部でゲームオーバーになっていたら、次のタイマーは呼ばない
+        if (!isGameOver) {
+            setTimeout(runCPUTurn, cpuWaitTime); 
+        }
     } else {
-        // 次のステップがない場合（ターン終了時など）もロックを解除して終わる
         isCpuRunningNow = false; 
     }
 }
