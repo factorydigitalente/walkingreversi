@@ -2,7 +2,7 @@
 <html lang="ja">
 <!-- 黒白仁棋（こくびゃくじんき、くろしろじんき、ヘイバイレンチー） -->
 <!-- Walking Reversi（ウォーキングリバーシ） -->
-<!-- ver20260516 -->
+<!-- ver20260520 -->
 <!-- Copyright (C) 2026 Factory Digital Entertainment. All rights reserved. -->
 <!-- このゲーム及び、ゲーム内の使用楽曲の著作権は全て、ファクトリー・デジタル・エンターテインメントおよび矢崎大信が有します。 -->
 <!-- 上記の著作権者に無断で、これらの著作物を出版・放送・演奏・複製・公開に使用することを禁じます。 -->
@@ -330,9 +330,37 @@ body {
     color: #ff4757; /* ダメージは赤系 */
 }
 
-.floating-text { position: fixed; font-weight: bold; z-index: 1000; animation: floatUp 0.8s forwards; }
-@keyframes floatUp { 0% { transform: translateY(0); opacity: 1; } 100% { transform: translateY(-60px); opacity: 0; } }
+.floating-text { 
+    position: fixed; 
+    font-weight: 900; /* 【くっきり】さらに太く極太に */
+    font-size: 22px;  /* 【くっきり】もし文字が小さければ好みのサイズ(20px〜26px等)に大きくしてください */
+    z-index: 1000; 
+    
+    /* 【くっきり】文字の周りに1ピクセルの黒い縁取り（アウトライン）を追加して視認性を極限まで高める */
+    /* text-shadow: 
+        -1px -1px 0 #000,  1px -1px 0 #000,
+        -1px  1px 0 #000,  1px  1px 0 #000; 
+	*/
+    /* 【長時間化】0.8s から 1.3s（1.3秒）に変更。滑らかに減速するイージングに変更 */
+    animation: floatUp 1.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; 
+}
 
+@keyframes floatUp { 
+    0% { 
+        transform: translateY(0); 
+        opacity: 1; 
+    } 
+    /* 【長時間表示のキモ】全体の70%の時間（約0.9秒間）までは不透明度を高く保ち、その場に留まるように見せる */
+    70% {
+        transform: translateY(-35px);
+        opacity: 0.9;
+    }
+    /* 最後の30%の時間で、一気に上に少し抜けながらフッと消える */
+    100% { 
+        transform: translateY(-50px); 
+        opacity: 0; 
+    } 
+}
 /* 右上メニュー全体のコンテナ */
 #right-top-menu {
     position: fixed;
@@ -1096,10 +1124,19 @@ function handleMove(dr, dc) {
 
     // 2. 移動先が石（部下）であるかチェック
     if (board[nr][nc] === 0) {
-        // 【詰み救済】周囲に石がない場合のみ、その場で足踏みを許可（甚大な被害）
+        // 【詰み救済】周囲に石がない場合のみ、その場で足踏みを許可（甚大な被害）※保険。理論上は発動しない
         if (!hasAdjacentStone(av.r, av.c)) {
-            applyHP(currentPlayer, -10, av.r, av.c, "停滞ペナルティ!! -10");
-            ap--;
+			const currentCellEl = document.getElementById(`cell-${av.r}-${av.c}`);
+		    let pixelX = window.innerWidth / 2;
+		    let pixelY = window.innerHeight / 2;
+		    if (currentCellEl) {
+		        const rect = currentCellEl.getBoundingClientRect();
+		        pixelX = rect.left + window.scrollX + (rect.width / 2);
+		        pixelY = rect.top + window.scrollY + (rect.height / 2);
+		    }
+
+		    applyHP(currentPlayer, -10, pixelX, pixelY, "停滞ペナルティ!! -10");
+		    ap--;
             if (ap <= 0) setTimeout(endTurn, 600);
             updateUI(); drawBoard();
         }
@@ -1126,8 +1163,21 @@ function handleMove(dr, dc) {
 	}
 
 	playSE(sounds.walk);
-	// applyHPの結果（死亡したか）を受け取る
-    const isDead = applyHP(currentPlayer, damage, nr, nc, msg);
+	
+	// 移動先セルのHTML要素から画面上のピクセル位置を取得する
+	const targetCellEl = document.getElementById(`cell-${nr}-${nc}`);
+	let pixelX = window.innerWidth / 2; // フォールバック用（画面中央）
+	let pixelY = window.innerHeight / 2;
+
+	if (targetCellEl) {
+	    const rect = targetCellEl.getBoundingClientRect();
+	    // マスの中心付近にテキストが出るように調整
+	    pixelX = rect.left + window.scrollX + (rect.width / 2);
+	    pixelY = rect.top + window.scrollY + (rect.height / 2);
+	}
+
+	// 盤面座標(nr, nc) の代わりに、ピクセル座標(pixelX, pixelY) を渡す
+	const isDead = applyHP(currentPlayer, damage, pixelX, pixelY, msg);
 
 	// もし死亡していたら、移動と描画の最低限の処理だけを行って終了する
     if (isDead) {
@@ -1167,21 +1217,37 @@ function hasAdjacentStone(r, c) {
     return false;
 }
 
-
-
 // アバターの現在位置を計算して表示
 function applyHP(player, amount, r, c, txt) {
+    // 1. 先にHPの計算を行い、UIの描画更新（アバターの移動）をかける
     avatars[player].hp = Math.min(MAX_HP, Math.max(0, avatars[player].hp + amount));
-    const targetNode = document.getElementById(`av-node-${player}`);
-    if (targetNode) {
-        const rect = targetNode.getBoundingClientRect();
-        showFloatingText(txt, rect.left + rect.width/2, rect.top, amount >= 0 ? '#2ecc71' : '#ff4757');
-    }
     updateUI();
+
+    // 2. アバターが持っている【本当の現在地】を基準にして位置を取得する
+    if (txt) {
+        setTimeout(() => {
+            // 【修正】引数の r, c ではなく、アバターオブジェクトから本当の現在地(r, c)を動的に取得
+            const currentR = avatars[player].r;
+            const currentC = avatars[player].c;
+            
+            const targetCell = document.getElementById(`cell-${currentR}-${currentC}`);
+            let posX = window.innerWidth / 2;
+            let posY = window.innerHeight / 2;
+            
+            if (targetCell) {
+                const rect = targetCell.getBoundingClientRect();
+                posX = rect.left + window.scrollX + (rect.width / 2);
+                posY = rect.top + window.scrollY;
+            }
+            
+            const textColor = (amount < 0) ? '#ff4757' : '#2ecc71';
+            showFloatingText(txt, posX, posY, textColor);
+        }, 150); // アバターがマスにしっかり移動し終えるのを待つために少しだけ猶予を調整（150ms）
+    }
 
     // HPが0になったら即判定し、死亡フラグ(true)を返す
     if (avatars[player].hp <= 0) {
-		// ゲームオーバーの表示だけを少し遅らせて、アバターの移動が見える猶予を作る
+        // ゲームオーバーの表示を少し遅らせる
         setTimeout(() => {
             checkGameOver();
         }, 200);
@@ -1199,7 +1265,7 @@ function showFloatingText(txt, x, y, color) {
     text.style.left = `${x}px`;
     text.style.top = `${y}px`;
     document.body.appendChild(text); // bodyに追加
-    setTimeout(() => text.remove(), 800);
+    setTimeout(() => text.remove(), 1300);
 }
 
 function endTurn() {
@@ -1493,29 +1559,38 @@ function canPlace(r, c, p) { return getFlips(r, c, p).length > 0; }
 function hasMove(p) { for(let r=0; r<8; r++) for(let c=0; c<8; c++) if(canPlace(r,c,p)) return true; return false; }
 
 // BGM制御用（再生速度も制御）
-function playBGM(src,isWalking) {
+function playBGM(src, isWalking) {
     const player = document.getElementById('bgm-player');
-    
-    // 1. まずソースをセット（曲が変わる場合のみ）
-    const currentSrc = player.getAttribute('src');
-    if (currentSrc !== src) {
+    if (!player) return;
+
+    // 💡【根本解決】
+    // すでにゲームが開始されている（startModalが非表示になっている）場合、
+    // 重複して呼び出された「bgm_title.mp3」の再生命令を完全に無視してシャットアウトする。
+    const modal = document.getElementById('startModal');
+    if (modal && modal.style.display === 'none' && src.includes('bgm_title.mp3')) {
+        console.log("ゲーム開始後のタイトルBGMの暴発をブロックしました。");
+        return; // 💡処理をここで強制終了させ、ゲーム用BGMを最優先にします
+    }
+
+    // パスのブレを防ぐ比較ロジック
+    const currentSrc = player.getAttribute('src') || "";
+    const cleanSrc = src.replace('./', '');
+
+    if (currentSrc === "" || !currentSrc.endsWith(cleanSrc)) {
+        player.pause();
         player.src = src;
         player.load();
     }
 
-	// 2. 再生速度（ピッチ）の設定：巡回なら1.05倍速、配置なら1倍速
+    // 再生速度（ピッチ）の設定：巡回なら1.05倍速、配置なら1倍速
     player.playbackRate = isWalking ? 1.05 : 1;
 
-    // 3. スイッチがON（bgmEnabled）の時だけ再生を試みる
+    // スイッチがON（bgmEnabled）の時だけ再生を試みる
     if (bgmEnabled) {
-        const promise = player.play();
-        if (promise !== undefined) {
-            promise.catch(error => {
-                console.log("Auto-play was prevented. Waiting for next interaction.");
-            });
-        }
+        player.play().catch(error => {
+            console.log("BGM Playback:", error.message);
+        });
     } else {
-        // スイッチがOFFなら停止させる
         player.pause();
     }
 }
@@ -1584,9 +1659,12 @@ function startGameFromModal() {
     isPvE = (mode === 'pve');
     isCPUvCPU = (mode === 'cvc');
 
-    // モードに応じた開始処理
+	// モードに応じた開始処理
     if (isCPUvCPU || (isPvE && currentPlayer === 2)) {
-        runCPUTurn(); 
+        // 💡初手のみ画面切り替えを認識できるよう、1秒（1000ミリ秒）のウェイトを挟んでからCPUを始動
+        setTimeout(() => {
+            runCPUTurn();
+        }, 1000);
     }
     
 	// ゲーム開始時の一時的な固定BGM指定を廃止し、速やかに初期UI/BGM選択(updateUI)へ委ねる
